@@ -46,6 +46,7 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
                              parallel = FALSE, percentile_edge_weight = 0.90,
                              clean_urls = FALSE, keep_ourl_only = FALSE,
                              gtimestamps = FALSE) {
+  print("prova")
 
   options(warn=-1)
 
