@@ -37,16 +37,23 @@
 #' @importFrom foreach foreach %dopar%
 #' @importFrom doSNOW registerDoSNOW
 #' @importFrom tidytable unnest bind_rows
+#' @importFrom CooRTweet detect_groups
+#' @importFrom CooRTweet generate_coordinated_network
 #'
 #' @export
 
-get_coord_shares <- function(ct_shares.df, coordination_interval=NULL, parallel=FALSE, percentile_edge_weight=0.90, clean_urls=FALSE, keep_ourl_only=FALSE, gtimestamps=FALSE) {
+get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
+                             parallel = FALSE, percentile_edge_weight = 0.90,
+                             clean_urls = FALSE, keep_ourl_only = FALSE,
+                             gtimestamps = FALSE) {
 
   options(warn=-1)
 
   # estimate the coordination interval if not specified by the users
   if(is.null(coordination_interval)){
-    coordination_interval <- estimate_coord_interval(ct_shares.df, clean_urls = clean_urls, keep_ourl_only= keep_ourl_only)
+    coordination_interval <- estimate_coord_interval(ct_shares.df,
+                                                     clean_urls = clean_urls,
+                                                     keep_ourl_only = keep_ourl_only)
     coordination_interval <- coordination_interval[[2]]
   }
 
@@ -110,152 +117,174 @@ get_coord_shares <- function(ct_shares.df, coordination_interval=NULL, parallel=
   # Parallel ####
   ###############
 
-  if(parallel==TRUE){
-
-    # setup parallel backend
-    cores <- parallel::detectCores()-1
-    cl <- parallel::makeCluster(cores, type = "PSOCK")
-    doSNOW::registerDoSNOW(cl)
-
-    # progress bar
-    pb <- utils::txtProgressBar(max=nrow(URLs), style=3)
-    progress <- function(n) utils::setTxtProgressBar(pb, n)
-    progress_bar <- list(progress=progress)
-
-    # cycle trough all URLs to find entities that shared the same link within the coordination internal
-    dat.summary <-
-      foreach::foreach(i=seq(1:nrow(URLs)), .packages="dplyr", .options.snow=progress_bar) %dopar% {
-
-        # show progress...
-        utils::setTxtProgressBar(pb, pb$getVal()+1)
-
-        url <- URLs$URL[i]
-        dat.summary <- subset(ct_shares.df, ct_shares.df$expanded==url)
-
-        if (length(unique(dat.summary$account.url)) > 1) {
-          dat.summary <- dat.summary %>%
-            dplyr::mutate(cut = cut(as.POSIXct(date), breaks = coordination_interval)) %>%
-            dplyr::group_by(cut) %>%
-            dplyr::mutate(count=n(),
-                   account.url=list(account.url),
-                   share_date=list(date),
-                   url = url) %>%
-            dplyr::select(cut, count, account.url, share_date, url) %>%
-            dplyr::filter(count > 1) %>%   # subset the URLs shared by more than one entity
-            unique()
-
-          return(dat.summary)
-        }
-      }
-
-    parallel::stopCluster(cl)
-
-    dat.summary <- tidytable::bind_rows(dat.summary)
-
-    if(nrow(dat.summary)==0){
-      stop("there are not enough shares!")
-    }
-
-    coordinated_shares <- tidytable::unnest(dat.summary)
-
-    rm(dat.summary, cores, cl, pb, progress, progress_bar)
-
-    # mark the coordinated shares in the data set
-    ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% coordinated_shares$url &
-                                           ct_shares.df$date %in% coordinated_shares$share_date &
-                                           ct_shares.df$account.url %in% coordinated_shares$account.url, TRUE, FALSE)
-
-    highly_c_list <- build_coord_graph(ct_shares.df=ct_shares.df, coordinated_shares=coordinated_shares, percentile_edge_weight=percentile_edge_weight, timestamps=gtimestamps)
-
-    highly_connected_g <- highly_c_list[[1]]
-    highly_connected_coordinated_entities <- highly_c_list[[2]]
-    q <- highly_c_list[[3]]
-    rm(highly_c_list)
-
-    uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
-
-    # write the log
-    write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-                "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-                "\npercentile_edge_weight:", percentile_edge_weight, paste0("(minimum coordination repetition: ", q, ")"),
-                "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
-                "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
-          file="log.txt", append=TRUE)
-
-    results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
-
-    return(results_list)
-  }
+  # if(parallel==TRUE){
+  #
+  #   # setup parallel backend
+  #   cores <- parallel::detectCores()-1
+  #   cl <- parallel::makeCluster(cores, type = "PSOCK")
+  #   doSNOW::registerDoSNOW(cl)
+  #
+  #   # progress bar
+  #   pb <- utils::txtProgressBar(max=nrow(URLs), style=3)
+  #   progress <- function(n) utils::setTxtProgressBar(pb, n)
+  #   progress_bar <- list(progress=progress)
+  #
+  #   # cycle trough all URLs to find entities that shared the same link within the coordination internal
+  #   dat.summary <-
+  #     foreach::foreach(i=seq(1:nrow(URLs)), .packages="dplyr", .options.snow=progress_bar) %dopar% {
+  #
+  #       # show progress...
+  #       utils::setTxtProgressBar(pb, pb$getVal()+1)
+  #
+  #       url <- URLs$URL[i]
+  #       dat.summary <- subset(ct_shares.df, ct_shares.df$expanded==url)
+  #
+  #       if (length(unique(dat.summary$account.url)) > 1) {
+  #         dat.summary <- dat.summary %>%
+  #           dplyr::mutate(cut = cut(as.POSIXct(date), breaks = coordination_interval)) %>%
+  #           dplyr::group_by(cut) %>%
+  #           dplyr::mutate(count=n(),
+  #                  account.url=list(account.url),
+  #                  share_date=list(date),
+  #                  url = url) %>%
+  #           dplyr::select(cut, count, account.url, share_date, url) %>%
+  #           dplyr::filter(count > 1) %>%   # subset the URLs shared by more than one entity
+  #           unique()
+  #
+  #         return(dat.summary)
+  #       }
+  #     }
+  #
+  #   parallel::stopCluster(cl)
+  #
+  #   dat.summary <- tidytable::bind_rows(dat.summary)
+  #
+  #   if(nrow(dat.summary)==0){
+  #     stop("there are not enough shares!")
+  #   }
+  #
+  #   coordinated_shares <- tidytable::unnest(dat.summary)
+  #
+  #   rm(dat.summary, cores, cl, pb, progress, progress_bar)
+  #
+  #   # mark the coordinated shares in the data set
+  #   ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% coordinated_shares$url &
+  #                                          ct_shares.df$date %in% coordinated_shares$share_date &
+  #                                          ct_shares.df$account.url %in% coordinated_shares$account.url, TRUE, FALSE)
+  #
+  #   highly_c_list <- build_coord_graph(ct_shares.df=ct_shares.df, coordinated_shares=coordinated_shares, percentile_edge_weight=percentile_edge_weight, timestamps=gtimestamps)
+  #
+  #   highly_connected_g <- highly_c_list[[1]]
+  #   highly_connected_coordinated_entities <- highly_c_list[[2]]
+  #   q <- highly_c_list[[3]]
+  #   rm(highly_c_list)
+  #
+  #   uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
+  #
+  #   # write the log
+  #   write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+  #               "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+  #               "\npercentile_edge_weight:", percentile_edge_weight, paste0("(minimum coordination repetition: ", q, ")"),
+  #               "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
+  #               "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
+  #         file="log.txt", append=TRUE)
+  #
+  #   results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
+  #
+  #   return(results_list)
+  # }
 
   ###################
   # Non Parallel ####
   ###################
 
-  if(parallel==FALSE){
+  if(parallel == FALSE){
 
-    datalist <- list()
-
-    # progress bar
-    total <- nrow(URLs)
-    pb <- txtProgressBar(max=total, style=3)
-
-    for (i in 1:nrow(URLs)) {
-
-      utils::setTxtProgressBar(pb, pb$getVal()+1)
-
-      url <- URLs$URL[i]
-      dat.summary <- subset(ct_shares.df, ct_shares.df$expanded==url)
-
-      if (length(unique(dat.summary$account.url)) > 1) {
-        dat.summary <- dat.summary %>%
-          dplyr::mutate(cut = cut(as.POSIXct(date), breaks = coordination_interval)) %>%
-          dplyr::group_by(cut) %>%
-          dplyr::mutate(count=n(),
-                 account.url=list(account.url),
-                 share_date=list(date),
-                 url = url) %>%
-          dplyr::select(cut, count, account.url, share_date, url) %>%
-          dplyr::filter(count > 1) %>%
-          unique()
-
-        datalist <- c(list(dat.summary), datalist)
-        rm(dat.summary)
-      }
+    coord_interval_to_numeric <- function(coordination_interval_raw) {
+      coord_interval <- as.numeric(sub(" secs", "", coordination_interval_raw))
+      return(coord_interval)
     }
 
-    datalist <- tidytable::bind_rows(datalist)
+    coordination_interval <- coord_interval_to_numeric(coordination_interval)
 
-    if(nrow(datalist)==0){
-      stop("there are not enough shares!")
-    }
+    print(coordination_interval)
 
-    coordinated_shares <- tidytable::unnest(datalist)
-    rm(datalist)
+    result <- detect_groups(ct_shares.df,
+                            min_participation = 2,
+                            time_window = coordination_interval)
 
-    # mark the coordinated shares in the data set
-    ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% coordinated_shares$url &
-                                           ct_shares.df$date %in% coordinated_shares$share_date &
-                                           ct_shares.df$account.url %in% coordinated_shares$account.url, TRUE, FALSE)
+    result_list <- generate_coordinated_network(result,
+                                                edge_weight = percentile_edge_weight,
+                                                objects = TRUE)
 
-    # call build_coord_graph
-    highly_c_list <- build_coord_graph(ct_shares.df=ct_shares.df, coordinated_shares=coordinated_shares, percentile_edge_weight=percentile_edge_weight, timestamps=gtimestamps)
 
-    highly_connected_g <- highly_c_list[[1]]
-    highly_connected_coordinated_entities <- highly_c_list[[2]]
-    q <- highly_c_list[[3]]
-    rm(highly_c_list)
+    #INIZIO COORNET
 
-    uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
+    # datalist <- list()
+    #
+    # # progress bar
+    # total <- nrow(URLs)
+    # pb <- txtProgressBar(max=total, style=3)
+    #
+    # for (i in 1:nrow(URLs)) {
+    #
+    #   utils::setTxtProgressBar(pb, pb$getVal()+1)
+    #
+    #   url <- URLs$URL[i]
+    #   dat.summary <- subset(ct_shares.df, ct_shares.df$expanded==url)
+    #
+    #   if (length(unique(dat.summary$account.url)) > 1) {
+    #     dat.summary <- dat.summary %>%
+    #       dplyr::mutate(cut = cut(as.POSIXct(date), breaks = coordination_interval)) %>%
+    #       dplyr::group_by(cut) %>%
+    #       dplyr::mutate(count=n(),
+    #              account.url=list(account.url),
+    #              share_date=list(date),
+    #              url = url) %>%
+    #       dplyr::select(cut, count, account.url, share_date, url) %>%
+    #       dplyr::filter(count > 1) %>%
+    #       unique()
+    #
+    #     datalist <- c(list(dat.summary), datalist)
+    #     rm(dat.summary)
+    #   }
+    # }
+    #
+    # datalist <- tidytable::bind_rows(datalist)
+    #
+    # if(nrow(datalist)==0){
+    #   stop("there are not enough shares!")
+    # }
+    #
+    # coordinated_shares <- tidytable::unnest(datalist)
+    # rm(datalist)
+    #
+    # # mark the coordinated shares in the data set
+    # ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% coordinated_shares$url &
+    #                                        ct_shares.df$date %in% coordinated_shares$share_date &
+    #                                        ct_shares.df$account.url %in% coordinated_shares$account.url, TRUE, FALSE)
+    #
+    # # call build_coord_graph
+    # highly_c_list <- build_coord_graph(ct_shares.df=ct_shares.df, coordinated_shares=coordinated_shares, percentile_edge_weight=percentile_edge_weight, timestamps=gtimestamps)
+    #
+    # highly_connected_g <- highly_c_list[[1]]
+    # highly_connected_coordinated_entities <- highly_c_list[[2]]
+    # q <- highly_c_list[[3]]
+    # rm(highly_c_list)
+    #
+    # uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
+    #
+    # # write the log
+    # write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+    #             "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+    #             "\npercentile_edge_weight:", percentile_edge_weight, paste0("(minimum coordination repetition: ", q, ")"),
+    #             "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
+    #             "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
+    #       file="log.txt", append=TRUE)
+    #
+    # results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
 
-    # write the log
-    write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-                "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-                "\npercentile_edge_weight:", percentile_edge_weight, paste0("(minimum coordination repetition: ", q, ")"),
-                "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
-                "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
-          file="log.txt", append=TRUE)
-
-    results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
+    #FINE COORNET
 
     return(results_list)
   }
