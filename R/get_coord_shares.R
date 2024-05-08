@@ -200,19 +200,31 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
 
   if(parallel == FALSE){
 
+    #riduco il dataset per fare le prove
+    set.seed(123)
+    ct_shares.df <- ct_shares.df[sample(nrow(ct_shares.df), 50000), ]
+
+    #rinomino le colonne per farle accettare dalle funzioni di coortweet
+    ct_shares.df_new <- prep_data(ct_shares.df,
+               object_id = "expanded",
+               account_id = "account.name",
+               content_id = "id",
+               timestamp_share = "date")
+
+    #Converto la stringa che indica il coordination interval in un numero
+    #leggibile dalla funzione di CooRTweet
     coord_interval_to_numeric <- function(coordination_interval_raw) {
       coord_interval <- as.numeric(sub(" secs", "", coordination_interval_raw))
       return(coord_interval)
     }
-
     coordination_interval <- coord_interval_to_numeric(coordination_interval)
 
-    print(coordination_interval)
-    print(1234)
 
-    result <- detect_groups(ct_shares.df,
+    result <- detect_groups(ct_shares.df_new,
                             min_participation = 2,
                             time_window = coordination_interval)
+
+    print(result)
 
     result_list <- generate_coordinated_network(result,
                                                 edge_weight = percentile_edge_weight,
@@ -287,6 +299,6 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
 
     #FINE COORNET
 
-    return(results_list)
+    return(result_list)
   }
 }
