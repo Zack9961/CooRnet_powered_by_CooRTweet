@@ -117,82 +117,132 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
   # Parallel ####
   ###############
 
-  # if(parallel==TRUE){
-  #
-  #   # setup parallel backend
-  #   cores <- parallel::detectCores()-1
-  #   cl <- parallel::makeCluster(cores, type = "PSOCK")
-  #   doSNOW::registerDoSNOW(cl)
-  #
-  #   # progress bar
-  #   pb <- utils::txtProgressBar(max=nrow(URLs), style=3)
-  #   progress <- function(n) utils::setTxtProgressBar(pb, n)
-  #   progress_bar <- list(progress=progress)
-  #
-  #   # cycle trough all URLs to find entities that shared the same link within the coordination internal
-  #   dat.summary <-
-  #     foreach::foreach(i=seq(1:nrow(URLs)), .packages="dplyr", .options.snow=progress_bar) %dopar% {
-  #
-  #       # show progress...
-  #       utils::setTxtProgressBar(pb, pb$getVal()+1)
-  #
-  #       url <- URLs$URL[i]
-  #       dat.summary <- subset(ct_shares.df, ct_shares.df$expanded==url)
-  #
-  #       if (length(unique(dat.summary$account.url)) > 1) {
-  #         dat.summary <- dat.summary %>%
-  #           dplyr::mutate(cut = cut(as.POSIXct(date), breaks = coordination_interval)) %>%
-  #           dplyr::group_by(cut) %>%
-  #           dplyr::mutate(count=n(),
-  #                  account.url=list(account.url),
-  #                  share_date=list(date),
-  #                  url = url) %>%
-  #           dplyr::select(cut, count, account.url, share_date, url) %>%
-  #           dplyr::filter(count > 1) %>%   # subset the URLs shared by more than one entity
-  #           unique()
-  #
-  #         return(dat.summary)
-  #       }
-  #     }
-  #
-  #   parallel::stopCluster(cl)
-  #
-  #   dat.summary <- tidytable::bind_rows(dat.summary)
-  #
-  #   if(nrow(dat.summary)==0){
-  #     stop("there are not enough shares!")
-  #   }
-  #
-  #   coordinated_shares <- tidytable::unnest(dat.summary)
-  #
-  #   rm(dat.summary, cores, cl, pb, progress, progress_bar)
-  #
-  #   # mark the coordinated shares in the data set
-  #   ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% coordinated_shares$url &
-  #                                          ct_shares.df$date %in% coordinated_shares$share_date &
-  #                                          ct_shares.df$account.url %in% coordinated_shares$account.url, TRUE, FALSE)
-  #
-  #   highly_c_list <- build_coord_graph(ct_shares.df=ct_shares.df, coordinated_shares=coordinated_shares, percentile_edge_weight=percentile_edge_weight, timestamps=gtimestamps)
-  #
-  #   highly_connected_g <- highly_c_list[[1]]
-  #   highly_connected_coordinated_entities <- highly_c_list[[2]]
-  #   q <- highly_c_list[[3]]
-  #   rm(highly_c_list)
-  #
-  #   uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
-  #
-  #   # write the log
-  #   write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-  #               "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-  #               "\npercentile_edge_weight:", percentile_edge_weight, paste0("(minimum coordination repetition: ", q, ")"),
-  #               "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
-  #               "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
-  #         file="log.txt", append=TRUE)
-  #
-  #   results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
-  #
-  #   return(results_list)
-  # }
+  if(parallel==TRUE){
+
+    # setup parallel backend
+    cores <- parallel::detectCores()-1
+    cl <- parallel::makeCluster(cores, type = "PSOCK")
+    doSNOW::registerDoSNOW(cl)
+
+    #riduco il dataset per fare le prove
+    set.seed(123)
+    ct_shares.df <- ct_shares.df[sample(nrow(ct_shares.df), 50000), ]
+
+    #rinomino le colonne per farle accettare dalle funzioni di coortweet
+    ct_shares.df_new <- prep_data(ct_shares.df,
+                                  object_id = "expanded",
+                                  account_id = "account.url",
+                                  content_id = "id",
+                                  timestamp_share = "date")
+
+    #Converto la stringa che indica il coordination interval in un numero
+    #leggibile dalla funzione di CooRTweet
+    coord_interval_to_numeric <- function(coordination_interval_raw) {
+      coord_interval <- as.numeric(sub(" secs", "", coordination_interval_raw))
+      return(coord_interval)
+    }
+    coordination_interval <- coord_interval_to_numeric(coordination_interval)
+
+    #Uso la funzione di coortweet per rilevare le rapid shares
+    result <- detect_groups(ct_shares.df_new,
+                            min_participation = 2,
+                            time_window = coordination_interval)
+
+    parallel::stopCluster(cl)
+
+    #una volta trovate, le vado a etichettare come farebbe CooRnet
+    ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% result$object_id &
+                                            (ct_shares.df$account.url %in% result$account_id | ct_shares.df$account.url %in% result$account_id_y) &
+                                            (ct_shares.df$id %in% result$content_id | ct_shares.df$id %in% result$content_id_y), TRUE, FALSE)
+
+    #genero il grafo usando la funzione di CooRTweet
+    highly_connected_g <- generate_coordinated_network(result,
+                                           edge_weight = percentile_edge_weight,
+                                           objects = TRUE)
+    #Ricavo le info degli account come farebbe CooRnet
+    all_account_info <- ct_shares.df %>%
+      dplyr::group_by(account.url) %>%
+      dplyr::mutate(account.name.changed = ifelse(length(unique(account.name))>1, TRUE, FALSE), # deal with account.data that may have changed (name, handle, pageAdminTopCountry, pageDescription, pageCategory)
+                    account.name = paste(unique(account.name), collapse = " | "),
+                    account.handle.changed = ifelse(length(unique(account.handle))>1, TRUE, FALSE),
+                    account.handle = paste(unique(account.handle), collapse = " | "),
+                    account.pageAdminTopCountry.changed = ifelse(length(unique(account.pageAdminTopCountry))>1, TRUE, FALSE),
+                    account.pageAdminTopCountry = paste(unique(account.pageAdminTopCountry), collapse = " | "),
+                    account.pageDescription.changed = ifelse(length(unique(account.pageDescription))>1, TRUE, FALSE),
+                    account.pageDescription = paste(unique(account.pageDescription), collapse = " | "),
+                    account.pageCategory.changed = ifelse(length(unique(account.pageCategory))>1, TRUE, FALSE),
+                    account.pageCategory = paste(unique(account.pageCategory), collapse = " | ")) %>%
+      dplyr::summarize(shares = n(),
+                       coord.shares = sum(is_coordinated==TRUE),
+                       account.avg.subscriberCount=mean(account.subscriberCount),
+                       account.name = dplyr::first(account.name), # name
+                       account.name.changed = dplyr::first(account.name.changed),
+                       account.handle.changed = dplyr::first(account.handle.changed), # handle
+                       account.handle = dplyr::first(account.handle),
+                       account.pageAdminTopCountry.changed= dplyr::first(account.pageAdminTopCountry.changed), # AdminTopCountry
+                       account.pageAdminTopCountry= dplyr::first(account.pageAdminTopCountry),
+                       account.pageDescription.changed = dplyr::first(account.pageDescription.changed), # PageDescription
+                       account.pageDescription = dplyr::first(account.pageDescription),
+                       account.pageCategory.changed = dplyr::first(account.pageCategory.changed), # PageCategory
+                       account.pageCategory = dplyr::first(account.pageCategory),
+                       account.pageCreatedDate = dplyr::first(account.pageCreatedDate), # DateCreated
+                       account.platform = dplyr::first(account.platform),
+                       account.platformId = dplyr::first(account.platformId),
+                       account.verified = dplyr::first(account.verified),
+                       account.accountType = dplyr::first(account.accountType))
+
+    # Ricavo il sottoinsieme di account_info, tenendo solo gli account che sono
+    # presenti nel grafo generato da CooRTweet, in modo da avere gli attributi
+    # pronti da inserire nei vertici
+    vertex.info <- subset(all_account_info, as.character(all_account_info$account.url) %in% V(highly_connected_g)$name)
+
+    #Inserisco gli attributi nei vertici del grafo generato da CooRTweet
+    V(highly_connected_g)$shares <- sapply(V(highly_connected_g)$name, function(x) vertex.info$shares[vertex.info$account.url == x])
+    V(highly_connected_g)$coord.shares <- sapply(V(highly_connected_g)$name, function(x) vertex.info$coord.shares[vertex.info$account.url == x])
+    V(highly_connected_g)$account.avg.subscriberCount <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.avg.subscriberCount[vertex.info$account.url == x])
+    V(highly_connected_g)$account.platform <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.platform[vertex.info$account.url == x])
+    V(highly_connected_g)$account.name <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.name[vertex.info$account.url == x])
+    V(highly_connected_g)$account.platformId<- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.platformId[vertex.info$account.url == x])
+    V(highly_connected_g)$name.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.name.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.handle <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.handle[vertex.info$account.url == x])
+    V(highly_connected_g)$handle.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.handle.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.verified <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.verified[vertex.info$account.url == x])
+    V(highly_connected_g)$pageAdminTopCountry.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageAdminTopCountry.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageAdminTopCountry <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageAdminTopCountry[vertex.info$account.url == x])
+    V(highly_connected_g)$account.accountType <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.accountType[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageCreatedDate <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageCreatedDate[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageDescription <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageDescription[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageDescription.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageDescription.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageCategory <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageCategory[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageCategory.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageCategory.changed[vertex.info$account.url == x])
+
+
+    # find and annotate nodes-components
+    V(highly_connected_g)$degree <- igraph::degree(highly_connected_g)
+    V(highly_connected_g)$component <- igraph::components(highly_connected_g)$membership
+    V(highly_connected_g)$cluster <- igraph::cluster_louvain(highly_connected_g)$membership # add cluster to simplyfy the analysis of large components
+    V(highly_connected_g)$degree <- igraph::degree(highly_connected_g) # re-calculate the degree on the subgraph
+    V(highly_connected_g)$strength <- igraph::strength(highly_connected_g) # sum up the edge weights of the adjacent edges for each vertex
+
+    # Ricavo la tabella dal grafo e numero le righe
+    highly_connected_coordinated_entities <- igraph::as_data_frame(highly_connected_g, "vertices")
+    rownames(highly_connected_coordinated_entities) <- 1:nrow(highly_connected_coordinated_entities)
+
+    # Ricavo le URLs condivise per il log
+    uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
+
+    #write the log
+     write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+                 "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+                 "\npercentile_edge_weight:", percentile_edge_weight,
+                 "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
+                 "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
+           file="log.txt", append=TRUE)
+
+    results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
+
+    return(results_list)
+  }
 
   ###################
   # Non Parallel ####
@@ -207,7 +257,7 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
     #rinomino le colonne per farle accettare dalle funzioni di coortweet
     ct_shares.df_new <- prep_data(ct_shares.df,
                object_id = "expanded",
-               account_id = "account.name",
+               account_id = "account.url",
                content_id = "id",
                timestamp_share = "date")
 
@@ -219,86 +269,105 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
     }
     coordination_interval <- coord_interval_to_numeric(coordination_interval)
 
-
+    #Uso la funzione di coortweet per rilevare le rapid shares
     result <- detect_groups(ct_shares.df_new,
                             min_participation = 2,
                             time_window = coordination_interval)
 
-    print(result)
+    # una volta trovate, le vado a etichettare come farebbe coornet
+    ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% result$object_id &
+                                            (ct_shares.df$account.url %in% result$account_id | ct_shares.df$account.url %in% result$account_id_y) &
+                                            (ct_shares.df$id %in% result$content_id | ct_shares.df$id %in% result$content_id_y), TRUE, FALSE)
 
-    result_list <- generate_coordinated_network(result,
-                                                edge_weight = percentile_edge_weight,
-                                                objects = TRUE)
+    #genero il grafo usando la funzione di CooRTweet
+    highly_connected_g <- generate_coordinated_network(result,
+                                            edge_weight = percentile_edge_weight,
+                                            objects = TRUE)
+
+    #Ricavo le info degli account come farebbe CooRnet
+    all_account_info <- ct_shares.df %>%
+      dplyr::group_by(account.url) %>%
+      dplyr::mutate(account.name.changed = ifelse(length(unique(account.name))>1, TRUE, FALSE), # deal with account.data that may have changed (name, handle, pageAdminTopCountry, pageDescription, pageCategory)
+                    account.name = paste(unique(account.name), collapse = " | "),
+                    account.handle.changed = ifelse(length(unique(account.handle))>1, TRUE, FALSE),
+                    account.handle = paste(unique(account.handle), collapse = " | "),
+                    account.pageAdminTopCountry.changed = ifelse(length(unique(account.pageAdminTopCountry))>1, TRUE, FALSE),
+                    account.pageAdminTopCountry = paste(unique(account.pageAdminTopCountry), collapse = " | "),
+                    account.pageDescription.changed = ifelse(length(unique(account.pageDescription))>1, TRUE, FALSE),
+                    account.pageDescription = paste(unique(account.pageDescription), collapse = " | "),
+                    account.pageCategory.changed = ifelse(length(unique(account.pageCategory))>1, TRUE, FALSE),
+                    account.pageCategory = paste(unique(account.pageCategory), collapse = " | ")) %>%
+      dplyr::summarize(shares = n(),
+                       coord.shares = sum(is_coordinated==TRUE),
+                       account.avg.subscriberCount=mean(account.subscriberCount),
+                       account.name = dplyr::first(account.name), # name
+                       account.name.changed = dplyr::first(account.name.changed),
+                       account.handle.changed = dplyr::first(account.handle.changed), # handle
+                       account.handle = dplyr::first(account.handle),
+                       account.pageAdminTopCountry.changed= dplyr::first(account.pageAdminTopCountry.changed), # AdminTopCountry
+                       account.pageAdminTopCountry= dplyr::first(account.pageAdminTopCountry),
+                       account.pageDescription.changed = dplyr::first(account.pageDescription.changed), # PageDescription
+                       account.pageDescription = dplyr::first(account.pageDescription),
+                       account.pageCategory.changed = dplyr::first(account.pageCategory.changed), # PageCategory
+                       account.pageCategory = dplyr::first(account.pageCategory),
+                       account.pageCreatedDate = dplyr::first(account.pageCreatedDate), # DateCreated
+                       account.platform = dplyr::first(account.platform),
+                       account.platformId = dplyr::first(account.platformId),
+                       account.verified = dplyr::first(account.verified),
+                       account.accountType = dplyr::first(account.accountType))
+
+    # Ricavo il sottoinsieme di account_info, tenendo solo gli account che sono
+    # presenti nel grafo generato da CooRTweet, in modo da avere gli attributi
+    # pronti da inserire nei vertici
+    vertex.info <- subset(all_account_info, as.character(all_account_info$account.url) %in% V(highly_connected_g)$name)
+
+    #Inserisco gli attributi nei vertici del grafo generato da CooRTweet
+    V(highly_connected_g)$shares <- sapply(V(highly_connected_g)$name, function(x) vertex.info$shares[vertex.info$account.url == x])
+    V(highly_connected_g)$coord.shares <- sapply(V(highly_connected_g)$name, function(x) vertex.info$coord.shares[vertex.info$account.url == x])
+    V(highly_connected_g)$account.avg.subscriberCount <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.avg.subscriberCount[vertex.info$account.url == x])
+    V(highly_connected_g)$account.platform <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.platform[vertex.info$account.url == x])
+    V(highly_connected_g)$account.name <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.name[vertex.info$account.url == x])
+    V(highly_connected_g)$account.platformId<- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.platformId[vertex.info$account.url == x])
+    V(highly_connected_g)$name.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.name.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.handle <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.handle[vertex.info$account.url == x])
+    V(highly_connected_g)$handle.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.handle.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.verified <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.verified[vertex.info$account.url == x])
+    V(highly_connected_g)$pageAdminTopCountry.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageAdminTopCountry.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageAdminTopCountry <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageAdminTopCountry[vertex.info$account.url == x])
+    V(highly_connected_g)$account.accountType <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.accountType[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageCreatedDate <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageCreatedDate[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageDescription <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageDescription[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageDescription.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageDescription.changed[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageCategory <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageCategory[vertex.info$account.url == x])
+    V(highly_connected_g)$account.pageCategory.changed <- sapply(V(highly_connected_g)$name, function(x) vertex.info$account.pageCategory.changed[vertex.info$account.url == x])
 
 
-    #INIZIO COORNET
 
-    # datalist <- list()
-    #
-    # # progress bar
-    # total <- nrow(URLs)
-    # pb <- txtProgressBar(max=total, style=3)
-    #
-    # for (i in 1:nrow(URLs)) {
-    #
-    #   utils::setTxtProgressBar(pb, pb$getVal()+1)
-    #
-    #   url <- URLs$URL[i]
-    #   dat.summary <- subset(ct_shares.df, ct_shares.df$expanded==url)
-    #
-    #   if (length(unique(dat.summary$account.url)) > 1) {
-    #     dat.summary <- dat.summary %>%
-    #       dplyr::mutate(cut = cut(as.POSIXct(date), breaks = coordination_interval)) %>%
-    #       dplyr::group_by(cut) %>%
-    #       dplyr::mutate(count=n(),
-    #              account.url=list(account.url),
-    #              share_date=list(date),
-    #              url = url) %>%
-    #       dplyr::select(cut, count, account.url, share_date, url) %>%
-    #       dplyr::filter(count > 1) %>%
-    #       unique()
-    #
-    #     datalist <- c(list(dat.summary), datalist)
-    #     rm(dat.summary)
-    #   }
-    # }
-    #
-    # datalist <- tidytable::bind_rows(datalist)
-    #
-    # if(nrow(datalist)==0){
-    #   stop("there are not enough shares!")
-    # }
-    #
-    # coordinated_shares <- tidytable::unnest(datalist)
-    # rm(datalist)
-    #
-    # # mark the coordinated shares in the data set
-    # ct_shares.df$is_coordinated <- ifelse(ct_shares.df$expanded %in% coordinated_shares$url &
-    #                                        ct_shares.df$date %in% coordinated_shares$share_date &
-    #                                        ct_shares.df$account.url %in% coordinated_shares$account.url, TRUE, FALSE)
-    #
-    # # call build_coord_graph
-    # highly_c_list <- build_coord_graph(ct_shares.df=ct_shares.df, coordinated_shares=coordinated_shares, percentile_edge_weight=percentile_edge_weight, timestamps=gtimestamps)
-    #
-    # highly_connected_g <- highly_c_list[[1]]
-    # highly_connected_coordinated_entities <- highly_c_list[[2]]
-    # q <- highly_c_list[[3]]
-    # rm(highly_c_list)
-    #
-    # uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
-    #
-    # # write the log
-    # write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-    #             "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
-    #             "\npercentile_edge_weight:", percentile_edge_weight, paste0("(minimum coordination repetition: ", q, ")"),
-    #             "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
-    #             "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
-    #       file="log.txt", append=TRUE)
-    #
-    # results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
+    # find and annotate nodes-components
+    V(highly_connected_g)$degree <- igraph::degree(highly_connected_g)
+    V(highly_connected_g)$component <- igraph::components(highly_connected_g)$membership
+    V(highly_connected_g)$cluster <- igraph::cluster_louvain(highly_connected_g)$membership # add cluster to simplyfy the analysis of large components
+    V(highly_connected_g)$degree <- igraph::degree(highly_connected_g) # re-calculate the degree on the subgraph
+    V(highly_connected_g)$strength <- igraph::strength(highly_connected_g) # sum up the edge weights of the adjacent edges for each vertex
 
-    #FINE COORNET
 
-    return(result_list)
+    # Ricavo la tabella dal grafo e numero le righe
+    highly_connected_coordinated_entities <- igraph::as_data_frame(highly_connected_g, "vertices")
+    rownames(highly_connected_coordinated_entities) <- 1:nrow(highly_connected_coordinated_entities)
+
+    # Ricavo le URLs condivise per il log
+    uniqueURLs_shared <- unique(ct_shares.df[, c("expanded", "is_coordinated")])
+
+    # write the log
+    write(paste("\nnumber of unique URLs shared in coordinated way:", table(uniqueURLs_shared$is_coordinated)[2][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[2][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+                "\nnumber of unique URLs shared in non-coordinated way:", table(uniqueURLs_shared$is_coordinated)[1][[1]], paste0("(", round((table(uniqueURLs_shared$is_coordinated)[1][[1]]/nrow(uniqueURLs_shared)),4)*100, "%)"),
+                "\npercentile_edge_weight:", percentile_edge_weight,
+                "\nhighly connected coordinated entities:", length(unique(highly_connected_coordinated_entities$name)),
+                "\nnumber of component:", length(unique(highly_connected_coordinated_entities$component))),
+          file="log.txt", append=TRUE)
+
+    results_list <- list(ct_shares.df, highly_connected_g, highly_connected_coordinated_entities)
+
+    return(results_list)
   }
 }
