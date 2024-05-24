@@ -3,7 +3,7 @@
 
 CooRnet powered by CooRTweet is a fork of CooRnet that utilizes the `CoorTweet` library for coordination detection, then maintains account-related information as CooRnet would, resulting in a more data-rich analysis.
 
-The detection process takes place entirely within the `get_coord_shares function`, as the function `build_coord_graph` present in CooRnet has been removed. The output of the function is compatible with other functions in CooRnet, such as `get_cluster_summary` and `get_component_summary`.
+The detection process takes place entirely within the `get_coord_shares` function, as the function `build_coord_graph` present in CooRnet has been removed. The output of the function is compatible with other functions in CooRnet, such as `get_cluster_summary` and `get_component_summary`.
 
 ## Installation
 
