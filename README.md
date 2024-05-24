@@ -1,28 +1,20 @@
-![](https://docs.google.com/drawings/d/e/2PACX-1vQ8V_WGl9RZ7rYzWA6sfXhbODgsZv4UwJGgS3sgoE3b_wXLh-3zJYRWtHwLyXveLZkmSW7C1iZAqC6w/pub?w=414&h=113)
+# CooRnet powered by CooRTweet
+*[Zack9961](https://github.com/Zack9961)
 
-*Fabio Giglietto, [Nicola Righetti](https://github.com/nicolarighetti), [Luca Rossi](https://github.com/lrossi79)*
-
-## Overview
-
-Given a set of URLs, this package detects coordinated link sharing behavior (CLSB) and outputs the network of entities that performed such behavior.
-
-## What do we mean by coordinated link sharing behavior?
-
-CLSB refers to a specific coordinated activity performed by a network of Facebook pages, groups, and verified public profiles (Facebook public entities) that repeatedly share the same news articles in a very short time frame.
-
-To identify such networks, we designed, implemented, and tested an algorithm that detects sets of Facebook public entities that perform CLSB by (1) estimating a time threshold that identifies URL shares performed by multiple distinguished entities within an unusually short period of time compared to the entire dataset, and (2) grouping the entities that repeatedly share the same news story within this coordination interval. The rationale is that while it may be common for several entities to share the same URLs, it is unlikely, unless a consistent coordination exists, that this occurs within the time threshold and repeatedly.
-
-See also [references] for a more detailed description and real-world applications.
+CooRnet powered by CooRTweet è un fork di CooRnet che utilizza la libreria di `CoorTweet` per fare la detection del coordinamento, per poi mantenere le informazioni relative agli account come farebbe CooRnet, avendo come risultato un'analisi più ricca di dati specifici.
 
 ## Installation
 
-You can install CooRnet from GitHub.
+You can install CooRnet powered by CooRTweet and CooRTweet from GitHub.
 
 ``` r
 # install.packages("devtools")
+# install.packages("CooRTweet")
 
 library("devtools")
-devtools::install_github("fabiogiglietto/CooRnet")
+library("CooRTweet")
+devtools::install_github("Zack9961/CooRnet_powered_by_CoorTweet")
+
 ```
 
 ## API keys
