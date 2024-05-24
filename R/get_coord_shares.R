@@ -124,10 +124,6 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
     cl <- parallel::makeCluster(cores, type = "PSOCK")
     doSNOW::registerDoSNOW(cl)
 
-    #riduco il dataset per fare le prove
-    set.seed(123)
-    ct_shares.df <- ct_shares.df[sample(nrow(ct_shares.df), 50000), ]
-
     #rinomino le colonne per farle accettare dalle funzioni di coortweet
     ct_shares.df_new <- prep_data(ct_shares.df,
                                   object_id = "expanded",
@@ -249,10 +245,6 @@ get_coord_shares <- function(ct_shares.df, coordination_interval = NULL,
   ###################
 
   if(parallel == FALSE){
-
-    #riduco il dataset per fare le prove
-    set.seed(123)
-    ct_shares.df <- ct_shares.df[sample(nrow(ct_shares.df), 50000), ]
 
     #rinomino le colonne per farle accettare dalle funzioni di coortweet
     ct_shares.df_new <- prep_data(ct_shares.df,
